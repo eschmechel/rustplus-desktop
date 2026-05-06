@@ -1153,13 +1153,7 @@ rp.connect();
         }
 
         // --- lokale Finder ---
-        static string? FindBundledNode()
-        {
-            var p1 = Path.Combine(AppContext.BaseDirectory, "runtime", "node-win-x64", "node.exe");
-            if (File.Exists(p1)) return p1;
-            var p2 = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "runtime", "node-win-x64", "node.exe"));
-            return File.Exists(p2) ? p2 : null;
-        }
+        static string? FindBundledNode() => NodeRuntimeResolver.FindNode();
 
         static string? FindRustplusJsPackageRoot()
         {
@@ -1180,14 +1174,8 @@ rp.connect();
         }
     }
 
-    // --- minimaler Node-Finder (kopie deiner Pairing-Helfer, gekürzt) ---
-    private static string? FindBundledNode()
-    {
-        var p1 = Path.Combine(AppContext.BaseDirectory, "runtime", "node-win-x64", "node.exe");
-        if (File.Exists(p1)) return p1;
-        var p2 = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "runtime", "node-win-x64", "node.exe"));
-        return File.Exists(p2) ? p2 : null;
-    }
+    // --- minimaler Node-Finder (delegiert an zentralen Resolver) ---
+    private static string? FindBundledNode() => NodeRuntimeResolver.FindNode();
 
 
 
