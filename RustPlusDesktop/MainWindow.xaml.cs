@@ -8998,6 +8998,49 @@ private sealed record MarkerRef(System.Windows.Shapes.Ellipse Dot, double U_DIP,
         }
     }
 
+    private async Task<bool> VerifyInstallerHashAsync(string installerPath, string installerUrl)
+    {
+        try
+        {
+            var hashUrl = installerUrl + ".sha256";
+            using var http = new HttpClient();
+            http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("RustPlusDesk", GetCurrentVersion().ToString()));
+            http.Timeout = TimeSpan.FromSeconds(10);
+
+            var hashResp = await http.GetAsync(hashUrl);
+            if (hashResp.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                AppendLog("[update] No SHA-256 file found on release; skipping integrity check. (Maintainer should publish .sha256 alongside installer.)");
+                return true; // allow update without hash for backward compat during transition
+            }
+
+            hashResp.EnsureSuccessStatusCode();
+            var expectedHash = (await hashResp.Content.ReadAsStringAsync()).Trim().Split(null)[0].ToLowerInvariant();
+
+            byte[] fileHash;
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            using (var fs = File.OpenRead(installerPath))
+            {
+                fileHash = sha.ComputeHash(fs);
+            }
+            var actualHash = BitConverter.ToString(fileHash).Replace("-", "").ToLowerInvariant();
+
+            if (!string.Equals(expectedHash, actualHash, StringComparison.OrdinalIgnoreCase))
+            {
+                AppendLog("[update][CRITICAL] Installer hash mismatch! Expected: " + expectedHash + " Actual: " + actualHash);
+                return false;
+            }
+
+            AppendLog("[update] Installer SHA-256 verified.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppendLog("[update][warn] Hash verification failed: " + ex.Message);
+            return false;
+        }
+    }
+
     private async Task<bool> StartInstallerAndExitAsync(string installerPath)
     {
         try
@@ -9006,8 +9049,8 @@ private sealed record MarkerRef(System.Windows.Shapes.Ellipse Dot, double U_DIP,
             var psi = new ProcessStartInfo
             {
                 FileName = installerPath,
-                UseShellExecute = true,
-                Verb = "runas" // UAC prompt, falls nötig
+                UseShellExecute = true
+                // SECURITY: removed Verb="runas" — installer now uses PrivilegesRequired=lowest (per-user)
             };
             Process.Start(psi);
 
@@ -9136,6 +9179,21 @@ private sealed record MarkerRef(System.Windows.Shapes.Ellipse Dot, double U_DIP,
             if (path == null)
             {
                 System.Windows.MessageBox.Show("Download failed.", "Update", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            // SECURITY: verify installer integrity before execution
+            _vm.BusyText = "Verifying installer hash …";
+            var hashOk = await VerifyInstallerHashAsync(path, dlUrl!);
+            _vm.IsBusy = false; _vm.BusyText = "";
+
+            if (!hashOk)
+            {
+                System.Windows.MessageBox.Show(
+                    "Installer integrity check failed. The downloaded file does not match the published hash.\n\n" +
+                    "This may indicate a corrupted download or a compromised release. Please download manually from GitHub.",
+                    "Update", MessageBoxButton.OK, MessageBoxImage.Warning);
+                try { File.Delete(path); } catch { }
                 return;
             }
 
