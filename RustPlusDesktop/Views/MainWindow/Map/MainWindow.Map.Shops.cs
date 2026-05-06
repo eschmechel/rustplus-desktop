@@ -39,13 +39,16 @@ public partial class MainWindow
         {
             if (!_deepSeaActive) // State change: inactive → active
             {
+                string dir = GetDeepSeaDirection(deepSeaShop.X, deepSeaShop.Y);
+                if (!string.IsNullOrEmpty(dir))
+                    TrackingService.LastDeepSeaDirection = dir; // Persist for next wipe
+
                 if (_firstShopPollDone)
                 {
                     // Genuine spawn detected while shop tracking was already running
                     _deepSeaSpawnTime = DateTime.UtcNow;
                     _deepSeaDespawnTime = null;
                     _deepSeaMidEvent = false;
-                    string dir = GetDeepSeaDirection(deepSeaShop.X, deepSeaShop.Y);
                     if (_announceSpawns && TrackingService.AnnounceDeepSea)
                         _ = SendTeamChatSafeAsync($"Deep Sea will spawn soon! (Direction: {dir})");
                     AppendLog($"[DEEPSEA] Spawn detected at {deepSeaShop.X:F0},{deepSeaShop.Y:F0} ({dir})");
@@ -55,7 +58,6 @@ public partial class MainWindow
                     // First poll — Deep Sea was already active when shops loaded
                     _deepSeaSpawnTime = null;
                     _deepSeaMidEvent = true;
-                    string dir = GetDeepSeaDirection(deepSeaShop.X, deepSeaShop.Y);
                     AppendLog($"[DEEPSEA] Active on first poll (mid-event) at {deepSeaShop.X:F0},{deepSeaShop.Y:F0} ({dir})");
                 }
             }

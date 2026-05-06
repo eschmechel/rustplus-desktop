@@ -731,25 +731,31 @@ public partial class MainWindow
         // 5. Deep Sea (Using native _deepSeaActive logic)
         string? dsTimer = null;
         string? dsTip = null;
+        string lastDir = TrackingService.LastDeepSeaDirection;
+        string dirSuffix = string.IsNullOrEmpty(lastDir) ? "" : $" ({lastDir})";
         if (_deepSeaActive)
         {
             if (_deepSeaSpawnTime.HasValue)
             {
                 var dsElapsed = DateTime.UtcNow - _deepSeaSpawnTime.Value;
                 dsTimer = $"{(int)dsElapsed.TotalHours:D1}:{dsElapsed.Minutes:D2}";
-                dsTip = $"Spawned {FormatAgo(dsElapsed)} ago";
+                dsTip = $"Spawned {FormatAgo(dsElapsed)} ago{dirSuffix}";
             }
             else
             {
                 dsTimer = "??:??";
-                dsTip = _deepSeaMidEvent ? "Shops enabled mid-event \u2014 spawn time unknown" : "Spawn time unknown";
+                dsTip = (_deepSeaMidEvent ? "Shops enabled mid-event \u2014 spawn time unknown" : "Spawn time unknown") + dirSuffix;
             }
         }
         else if (_deepSeaDespawnTime.HasValue)
         {
             var dsInactive = DateTime.UtcNow - _deepSeaDespawnTime.Value;
             dsTimer = $"{(int)dsInactive.TotalHours:D1}:{dsInactive.Minutes:D2}";
-            dsTip = $"Inactive since {FormatAgo(dsInactive)} ago";
+            dsTip = $"Inactive since {FormatAgo(dsInactive)} ago{dirSuffix}";
+        }
+        else if (!string.IsNullOrEmpty(lastDir))
+        {
+            dsTip = $"Last known direction: {lastDir}";
         }
         activeEvents.Add(new EventDockItem { Name = "Deep Sea Event", Icon = "pack://application:,,,/icons/ds_event.png", Active = _deepSeaActive, Id = 0, X = 0, Y = 0, Trackable = false, Type = 0, TimerText = dsTimer, ToolTip = dsTip });
 
@@ -1069,6 +1075,7 @@ public partial class MainWindow
             state.MissingCount = 0;
             state.LastRealX = m.X; // Track last real (non-ghost) position for crash detection
             state.LastRealY = m.Y;
+            state.ConfirmedTicks++;
 
             // False alarm: if a crash site exists for this heli but heli is back, retract it
             if (m.Type == 8)
@@ -1415,8 +1422,9 @@ public partial class MainWindow
             // Real removal after 5 missing polls or if no state
             if (_dynEls.TryGetValue(id, out var oldEl))
             {
-                // Heli crash detection: if Type==8 and last real position was inside the map, it was shot down
-                if (state != null && state.Type == 8 && IsInsideMap(state.LastRealX, state.LastRealY))
+                // Heli crash detection: if Type==8, last real position was inside the map,
+                // AND the heli has been consistently tracked for at least 3 ticks (prevents false positive on reconnect)
+                if (state != null && state.Type == 8 && state.ConfirmedTicks >= 3 && IsInsideMap(state.LastRealX, state.LastRealY))
                 {
                     double cx = state.LastRealX, cy = state.LastRealY;
                     string crashGrid = GetGridLabel(cx, cy);
@@ -1425,7 +1433,7 @@ public partial class MainWindow
                     _ = Dispatcher.InvokeAsync(() => site.MapElement = PlaceHeliCrashSite(site));
                     if (_announceSpawns && TrackingService.AnnounceHeli)
                         _ = SendTeamChatSafeAsync($"Patrol Heli shot down at {crashGrid}");
-                    AppendLog($"[HeliCrash] Crash detected at {crashGrid} (last real pos {cx:F0},{cy:F0})");
+                    AppendLog($"[HeliCrash] Crash detected at {crashGrid} (last real pos {cx:F0},{cy:F0}, confirmed {state.ConfirmedTicks} ticks)");
                 }
 
                 Overlay.Children.Remove(oldEl);

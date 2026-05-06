@@ -1169,7 +1169,19 @@ rp.connect();
             if (string.IsNullOrEmpty(e.Data)) return;
             L(e.Data); // alles loggen
             if (e.Data.StartsWith("ERR:"))
-                tcs.TrySetException(new Exception(e.Data));
+            {
+                // Graceful handling: rate_limit is a transient Facepunch API limit, not a fatal error
+                if (e.Data.Contains("rate_limit", StringComparison.OrdinalIgnoreCase))
+                {
+                    L("[cam-node] Rate limited by Facepunch API — retry after a few seconds.");
+                    // Don't throw; let the caller treat this as a timeout (returns null frame)
+                    tcs.TrySetCanceled();
+                }
+                else
+                {
+                    tcs.TrySetException(new Exception(e.Data));
+                }
+            }
             if (e.Data.IndexOf("Cannot find module", StringComparison.OrdinalIgnoreCase) >= 0)
                 tcs.TrySetException(new FileNotFoundException(e.Data));
             if (e.Data.StartsWith("TIMEOUT"))

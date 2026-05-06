@@ -1611,6 +1611,7 @@ public partial class MainWindow : Window
         public double LastCalculatedAngle;
         public bool SeenAtEdge;
         public double LastRealX, LastRealY; // last confirmed non-ghost position (for crash detection)
+        public int ConfirmedTicks; // ticks this entity has been seen (for heli crash: require >= 3 before crash-eligible)
     }
     private readonly Dictionary<uint, DynMarkerState> _dynStates = new();
     private readonly HashSet<uint> _dynKnown = new();                      // “already spawned” for chat announcements
