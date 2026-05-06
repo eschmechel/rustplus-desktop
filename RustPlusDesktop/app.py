@@ -1,16 +1,26 @@
 # app.py
+# SECURITY NOTE: This file supports a 30-day grace period for legacy clients.
+# After 2026-06-04 the legacy global secret will be rejected.
+# New clients should use the local OverlayLocalServer (C#) instead.
 from flask import Flask, request, send_file, jsonify, abort
-import os, hmac, hashlib, time, json
+import os, hmac, hashlib, time, json, re, datetime
 from pathlib import Path
 from functools import wraps
 
 # --- CONFIG ---
 DATA_DIR = Path("/var/lib/rustplus-overlays")   # Speicherort (muss existieren, chmod 750)
-SHARED_SECRET = b"23c5a7dbf02b63543da043ca7d6de1fbf706a080c899e334a8cd599206e13fde" # Byte-Secret (setze hier ein langes random)
 MAX_UPLOAD_BYTES = 350 * 1024   # 350 KB
 MAX_UPLOADS_PER_MIN = 5         # 5 Uploads / Minute pro SteamID
-CLEANUP_DAYS = 35               # Dateien älter als X Tage werden gelöscht
+CLEANUP_DAYS = 35               # Dateien Ã¤lter als X Tage werden gelÃ¶scht
 # ----------------
+
+# SECURITY: Legacy shared secret â€” kept only for 30-day grace period.
+# After GRACE_PERIOD_END this will be removed entirely.
+SHARED_SECRET_LEGACY = b"23c5a7dbf02b63543da043ca7d6de1fbf706a080c899e334a8cd599206e13fde"
+GRACE_PERIOD_END = datetime.datetime(2026, 6, 4, 0, 0, 0, tzinfo=datetime.timezone.utc)
+
+def _grace_period_active():
+    return datetime.datetime.now(datetime.timezone.utc) < GRACE_PERIOD_END
 
 app = Flask(__name__)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -31,6 +41,28 @@ def save_rate_store():
     except Exception:
         pass
 
+def _is_valid_server_key(server_key):
+    """Strict validation: alphanumerics, hyphens, underscores only."""
+    if not server_key or len(server_key) > 128:
+        return False
+    return bool(re.fullmatch(r'[A-Za-z0-9_-]+', server_key))
+
+def _verify_sig(steam, server_key, nonce, body_bytes, sig_client):
+    """Verify HMAC signature. Accepts legacy secret during grace period."""
+    msg = steam.encode("utf-8") + b"|" + server_key.encode("utf-8") + b"|" + nonce.encode("utf-8") + b"|"
+    msg += body_bytes
+
+    # Try legacy secret first (grace period)
+    if _grace_period_active():
+        expected_legacy = hmac.new(SHARED_SECRET_LEGACY, msg, digestmod=hashlib.sha256).hexdigest()
+        if hmac.compare_digest(expected_legacy, sig_client):
+            app.logger.warning("[GRACE-PERIOD] Request authenticated with legacy global secret from steam=%s. Client should update before %s.", steam, GRACE_PERIOD_END.isoformat())
+            return True
+
+    # After grace period: only per-user keys or other secrets would be checked here.
+    # For now, legacy is the only fallback during the grace window.
+    return False
+
 def require_sig(f):
     """Decorator: expect headers:
        X-SteamId, X-ServerKey, X-Nonce, X-Signature (hex)
@@ -45,6 +77,9 @@ def require_sig(f):
         if not (steam and server_key and nonce and sig):
             abort(400, "missing auth headers")
 
+        if not _is_valid_server_key(server_key):
+            abort(400, "invalid server_key")
+
         # Check nonce timeliness (allow 5 min)
         try:
             nval = int(nonce)
@@ -54,12 +89,8 @@ def require_sig(f):
         if abs(now - nval) > 300:
             abort(400, "nonce expired")
 
-        # Compute HMAC
         body = request.get_data() or b""
-        msg = steam.encode("utf-8") + b"|" + server_key.encode("utf-8") + b"|" + nonce.encode("utf-8") + b"|"
-        msg += body
-        expected = hmac.new(SHARED_SECRET, msg, digestmod=hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(expected, sig):
+        if not _verify_sig(steam, server_key, nonce, body, sig):
             abort(403, "bad signature")
 
         # attach validated values for view
@@ -93,8 +124,11 @@ def put_overlay(server_key, steamid):
     if not rate_allow(steamid):
         abort(429, "rate limit exceeded")
 
-    # create folder per server
-    target_dir = DATA_DIR / server_key
+    # Path containment check
+    target_dir = (DATA_DIR / server_key).resolve()
+    if not str(target_dir).startswith(str(DATA_DIR.resolve())):
+        abort(400, "path traversal detected")
+
     target_dir.mkdir(parents=True, exist_ok=True)
     # atomic-ish write
     tmp = target_dir / f"{steamid}.json.tmp"
@@ -106,7 +140,15 @@ def put_overlay(server_key, steamid):
 
 @app.route("/overlay/<server_key>/<steamid>", methods=["GET"])
 def get_overlay(server_key, steamid):
-    target = DATA_DIR / server_key / f"{steamid}.json"
+    # SECURITY: Path traversal protection
+    if not _is_valid_server_key(server_key):
+        abort(400, "invalid server_key")
+
+    target_dir = (DATA_DIR / server_key).resolve()
+    if not str(target_dir).startswith(str(DATA_DIR.resolve())):
+        abort(400, "path traversal detected")
+
+    target = target_dir / f"{steamid}.json"
     if not target.exists():
         return ("", 204)  # no content
     # return application/json
@@ -114,7 +156,7 @@ def get_overlay(server_key, steamid):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"ok": True, "server": True})
+    return jsonify({"ok": True, "server": True, "grace_period_active": _grace_period_active()})
 
 # Optional: admin endpoint to list server folders (restrict via firewall / nginx auth)
 # not exposed by default

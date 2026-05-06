@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SECURITY NOTE: This file supports a 30-day grace period for legacy clients.
+# After 2026-06-04 the legacy global secret will be rejected.
+# New clients should use the local OverlayLocalServer (C#) instead.
 
 import http.server
 import socketserver
@@ -10,14 +13,20 @@ import hashlib
 import os
 import time
 import urllib.parse
+import re
+import datetime
 
 # === CONFIG ===
-_shared_secret_hex = "23c5a7dbf02b63543da043ca7d6de1fbf706a080c899e334a8cd599206e13fde"
+_shared_secret_hex_legacy = "23c5a7dbf02b63543da043ca7d6de1fbf706a080c899e334a8cd599206e13fde"
+GRACE_PERIOD_END = datetime.datetime(2026, 6, 4, 0, 0, 0, tzinfo=datetime.timezone.utc)
+
+def _grace_period_active():
+    return datetime.datetime.now(datetime.timezone.utc) < GRACE_PERIOD_END
 
 def _hex_to_bytes(h):
     return bytes.fromhex(h)
 
-SHARED_SECRET = _hex_to_bytes(_shared_secret_hex)
+SHARED_SECRET_LEGACY = _hex_to_bytes(_shared_secret_hex_legacy)
 
 BASE_DIR = "/home/rust-plus/data"
 MAX_OVERLAY_BYTES = 350 * 1024
@@ -28,19 +37,30 @@ def ensure_dir(path):
     if not os.path.isdir(path):
         os.makedirs(path, exist_ok=True)
 
+def _is_valid_server_key(server_key):
+    """Strict validation: alphanumerics, hyphens, underscores only."""
+    if not server_key or len(server_key) > 128:
+        return False
+    return bool(re.fullmatch(r'[A-Za-z0-9_-]+', server_key))
+
 def server_key_to_path(server_key):
-    # Sicherheit: nur sehr eingeschränkte erlaubte Zeichen
-    safe = "".join(ch for ch in server_key if ch.isalnum() or ch in ("-","_","."))
+    # Sicherheit: nur sehr eingeschrÃ¤nkte erlaubte Zeichen
+    safe = "".join(ch for ch in server_key if ch.isalnum() or ch in ("-","_"))
     return safe
 
 def steamid_to_filename(steamid):
     safe = "".join(ch for ch in steamid if ch.isdigit())
     return safe + ".json"
 
-def build_sig(steamid, server_key, ts, overlay_b64):
+def build_sig_legacy(steamid, server_key, ts, overlay_b64):
     msg = steamid + "|" + server_key + "|" + ts + "|" + overlay_b64
-    mac = hmac.new(SHARED_SECRET, msg.encode("utf-8"), hashlib.sha256).hexdigest()
+    mac = hmac.new(SHARED_SECRET_LEGACY, msg.encode("utf-8"), hashlib.sha256).hexdigest()
     return mac
+
+def verify_sig_legacy(steamid, server_key, ts, overlay_b64, sig_client):
+    """Verify HMAC using legacy secret."""
+    expected = build_sig_legacy(steamid, server_key, ts, overlay_b64)
+    return hmac.compare_digest(expected, sig_client)
 
 class OverlayHandler(http.server.BaseHTTPRequestHandler):
     # kleine Helper um JSON-Response zu schicken
@@ -49,7 +69,7 @@ class OverlayHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        # kein CORS nötig für dich lokal, aber schadet nicht:
+        # kein CORS nÃ¶tig fÃ¼r dich lokal, aber schadet nicht:
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
@@ -84,6 +104,10 @@ class OverlayHandler(http.server.BaseHTTPRequestHandler):
             self.send_json(400, {"error":"missing_field"})
             return
 
+        if not _is_valid_server_key(serverKey):
+            self.send_json(400, {"error": "invalid_server_key"})
+            return
+
         # Timestamp check
         try:
             ts_int = int(ts)
@@ -99,21 +123,22 @@ class OverlayHandler(http.server.BaseHTTPRequestHandler):
             return
 
         # Signature check
-        sig_expected = build_sig(steamId, serverKey, ts, overlay_b64)
-        if not hmac.compare_digest(sig_expected, sig_client):
+        sig_ok = False
+        if _grace_period_active():
+            sig_ok = verify_sig_legacy(steamId, serverKey, ts, overlay_b64, sig_client)
+            if sig_ok:
+                print("[GRACE-PERIOD] /upload authenticated with legacy secret from steam=%s" % steamId)
+
+        if not sig_ok:
             print("DEBUG /upload: bad_sig")
             print("  steamId   =", steamId)
             print("  serverKey =", serverKey)
             print("  ts        =", ts)
             print("  overlay_b64_len =", len(overlay_b64))
-            print("  sig_expected=", sig_expected)
-            print("  sig_client  =", sig_client)
             self.send_json(403, {"error":"bad_sig"})
             return
 
-
-
-        # Größe checken
+        # GrÃ¶ÃŸe checken
         try:
             overlay_bytes = base64.b64decode(overlay_b64.encode("utf-8"), validate=True)
         except Exception:
@@ -157,6 +182,10 @@ class OverlayHandler(http.server.BaseHTTPRequestHandler):
             self.send_json(400, {"error":"missing_field"})
             return
 
+        if not _is_valid_server_key(serverKey):
+            self.send_json(400, {"error": "invalid_server_key"})
+            return
+
         # Timestamp check
         try:
             ts_int = int(ts)
@@ -167,6 +196,24 @@ class OverlayHandler(http.server.BaseHTTPRequestHandler):
         now = int(time.time())
         if abs(now - ts_int) > MAX_AGE_SECONDS:
             self.send_json(403, {"error":"timestamp_out_of_range"})
+            return
+
+        # SECURITY: Verify signature on fetch (was previously missing!)
+        # For fetch, we sign: steamId|serverKey|ts
+        sig_ok = False
+        if _grace_period_active():
+            expected = build_sig_legacy(steamId, serverKey, ts, "")
+            # The legacy client signs msg without overlay_b64 for GET
+            # Actually the legacy formula for GET is: steamId|serverKey|ts
+            # So we need a separate verification for GET
+            msg = steamId + "|" + serverKey + "|" + ts
+            expected_get = hmac.new(SHARED_SECRET_LEGACY, msg.encode("utf-8"), hashlib.sha256).hexdigest()
+            sig_ok = hmac.compare_digest(expected_get, sig_client)
+            if sig_ok:
+                print("[GRACE-PERIOD] /fetch authenticated with legacy secret from steam=%s" % steamId)
+
+        if not sig_ok:
+            self.send_json(403, {"error":"bad_sig"})
             return
 
         # Datei lesen
@@ -188,8 +235,8 @@ class OverlayHandler(http.server.BaseHTTPRequestHandler):
         # wieder b64 encoden
         overlay_b64 = base64.b64encode(overlay_bytes).decode("utf-8")
 
-        # Signatur neu berechnen damit Client prüfen kann
-        sig_expected = build_sig(steamId, serverKey, ts, overlay_b64)
+        # Signatur neu berechnen damit Client prÃ¼fen kann
+        sig_expected = build_sig_legacy(steamId, serverKey, ts, overlay_b64)
 
         # Response
         resp = {
@@ -201,9 +248,9 @@ class OverlayHandler(http.server.BaseHTTPRequestHandler):
         }
         self.send_json(200, resp)
 
-    # unterdrück lautes Logging in der Konsole wenn du willst
+    # unterdrÃ¼ck lautes Logging in der Konsole wenn du willst
     def log_message(self, format, *args):
-        # kommentier aus für Silence
+        # kommentier aus fÃ¼r Silence
         print("[%s] %s" % (self.log_date_time_string(), format%args))
 
 class ReusableTCPServer(socketserver.TCPServer):
@@ -216,6 +263,7 @@ if __name__ == "__main__":
     ensure_dir(BASE_DIR)
 
     print("Overlay server starting on %s:%d" % (HOST, PORT))
+    print("Grace period active: %s (ends %s)" % (_grace_period_active(), GRACE_PERIOD_END.isoformat()))
 
     httpd = ReusableTCPServer((HOST, PORT), OverlayHandler)
     print("Overlay server listening on %s:%d" % (HOST, PORT))

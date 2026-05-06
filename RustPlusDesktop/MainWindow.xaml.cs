@@ -89,6 +89,8 @@ public partial class MainWindow : Window
     private static readonly Brush SearchSubtle = new SolidColorBrush(Color.FromArgb(180, 220, 220, 220));
     // CROSSHAIR
     private CrosshairWindow? _overlay;
+    // OVERLAY LOCAL SERVER (replaces remote 85.214.193.250:5000)
+    private OverlayLocalServer? _overlayServer;
     private CrosshairStyle _currentStyle = CrosshairStyle.GreenDot;
     private bool _alertsNeedRebaseline = false;
     private bool _visible;
@@ -969,6 +971,9 @@ public partial class MainWindow : Window
             TrackingService.SidebarWidth = ColSidebar.ActualWidth;
         }
 
+        _overlayServer?.Dispose();
+        _overlayServer = null;
+
         base.OnClosing(e);
     }
 
@@ -988,6 +993,18 @@ public partial class MainWindow : Window
         AppendLog($"[items-new] baseDir={baseDir}");
         EnsureNewItemDbLoaded();
         AppendLog($"[items-new] source={sNewDbSource} items={sItemsById.Count} byShort={sItemsByShort.Count}");
+
+        // Start local overlay server (security: replaces remote 85.214.193.250:5000)
+        _overlayServer = new OverlayLocalServer();
+        if (_overlayServer.Start())
+        {
+            AppendLog($"[overlay] Local server started at {_overlayServer.BaseUrl}");
+        }
+        else
+        {
+            AppendLog("[overlay][warn] Could not start local overlay server; will fall back to remote during grace period.");
+        }
+
         // GridLayer.RenderTransform = MapTransform;
         // Overlay.RenderTransform   = MapTransform;
         // bei Host-Resize: nur Markerpositionen neu berechnen
@@ -9715,21 +9732,38 @@ private sealed record MarkerRef(System.Windows.Shapes.Ellipse Dot, double U_DIP,
         try
         {
             var serverKey = GetServerKey();
-            var ts = UnixNow().ToString();
-
-            var msg = $"{steamId}|{serverKey}|{ts}";
-            var sig = HmacSha256Hex(OVERLAY_SYNC_SECRET_HEX, msg);
+            var baseUrl = GetOverlayBaseUrl();
+            if (string.IsNullOrEmpty(baseUrl))
+                return false;
 
             using (var http = new HttpClient())
             {
                 http.Timeout = TimeSpan.FromSeconds(5);
 
-                var url = OVERLAY_SYNC_BASEURL
-                    + "/fetch"
-                    + "?steamId=" + WebUtility.UrlEncode(steamId.ToString())
-                    + "&serverKey=" + WebUtility.UrlEncode(serverKey)
-                    + "&ts=" + WebUtility.UrlEncode(ts)
-                    + "&sig=" + WebUtility.UrlEncode(sig);
+                string url;
+                if (baseUrl.StartsWith("http://127.0.0.1"))
+                {
+                    // Local server: no HMAC needed (localhost-only)
+                    url = baseUrl
+                        + "/fetch"
+                        + "?steamId=" + WebUtility.UrlEncode(steamId.ToString())
+                        + "&serverKey=" + WebUtility.UrlEncode(serverKey);
+                }
+                else
+                {
+                    // Legacy remote server (grace period): HMAC required
+                    var ts = UnixNow().ToString();
+                    var msg = $"{steamId}|{serverKey}|{ts}";
+#pragma warning disable CS0618
+                    var sig = HmacSha256Hex(OVERLAY_SYNC_SECRET_HEX_LEGACY, msg);
+#pragma warning restore CS0618
+                    url = baseUrl
+                        + "/fetch"
+                        + "?steamId=" + WebUtility.UrlEncode(steamId.ToString())
+                        + "&serverKey=" + WebUtility.UrlEncode(serverKey)
+                        + "&ts=" + WebUtility.UrlEncode(ts)
+                        + "&sig=" + WebUtility.UrlEncode(sig);
+                }
 
                // AppendLog($"[overlay/net] GET {url}");
 
@@ -10750,25 +10784,45 @@ private sealed record MarkerRef(System.Windows.Shapes.Ellipse Dot, double U_DIP,
             var overlayB64 = Convert.ToBase64String(rawBytes);
 
             var serverKey = GetServerKey();
-            var ts = UnixNow().ToString();
-            var sigInput = _mySteamId.ToString() + "|" + serverKey + "|" + ts + "|" + overlayB64;
-            var sig = HmacSha256Hex(OVERLAY_SYNC_SECRET_HEX, sigInput);
+            var baseUrl = GetOverlayBaseUrl();
+            if (string.IsNullOrEmpty(baseUrl))
+                return;
 
-            var payloadObj = new
+            object payloadObj;
+            if (baseUrl.StartsWith("http://127.0.0.1"))
             {
-                steamId = _mySteamId.ToString(),
-                serverKey = serverKey,
-                ts = ts,
-                overlayJsonB64 = overlayB64,
-                sig = sig
-            };
+                // Local server: no HMAC needed
+                payloadObj = new
+                {
+                    steamId = _mySteamId.ToString(),
+                    serverKey = serverKey,
+                    overlayJsonB64 = overlayB64
+                };
+            }
+            else
+            {
+                // Legacy remote (grace period): HMAC required
+                var ts = UnixNow().ToString();
+                var sigInput = _mySteamId.ToString() + "|" + serverKey + "|" + ts + "|" + overlayB64;
+#pragma warning disable CS0618
+                var sig = HmacSha256Hex(OVERLAY_SYNC_SECRET_HEX_LEGACY, sigInput);
+#pragma warning restore CS0618
+                payloadObj = new
+                {
+                    steamId = _mySteamId.ToString(),
+                    serverKey = serverKey,
+                    ts = ts,
+                    overlayJsonB64 = overlayB64,
+                    sig = sig
+                };
+            }
 
             var payloadJson = System.Text.Json.JsonSerializer.Serialize(payloadObj);
             var content = new StringContent(payloadJson, Encoding.UTF8, "application/json");
 
             using (var http = new HttpClient())
             {
-                var url = OVERLAY_SYNC_BASEURL + "/upload";
+                var url = baseUrl + "/upload";
                 var resp = await http.PostAsync(url, content);
                 if (!resp.IsSuccessStatusCode)
                 {
@@ -10794,37 +10848,38 @@ private sealed record MarkerRef(System.Windows.Shapes.Ellipse Dot, double U_DIP,
         try
         {
             var serverKey = GetServerKey();
-            var ts = UnixNow().ToString();
-
-            // Wir signieren dieselbe Formel wie der Server in /fetch prüft:
-            // msg = "<steamId>|<serverKey>|<ts>|<overlayB64>"
-            // ABER: Wir kennen overlayB64 ja noch nicht vorm Request 🤔
-            //
-            // Lösung: Wir machen es wie folgt:
-            // - Server-Code oben hat overlay_b64 mit in die Signatur genommen.
-            //   Das bedeutet: Client muss erst overlay_b64 kennen. Das geht so natürlich nicht.
-            //
-            // Also müssen wir eine kleine Änderung machen:
-            // Variante A (einfach): wir ändern /fetch auf dem Server so, dass er
-            // NUR steamId|serverKey|ts signed, OHNE overlayB64.
-            //
-            // Mach das bitte gleich am Server (fetch-Teil ersetzen):
-
-            // (Wir nehmen jetzt an, du hast den Server so geändert wie unten beschrieben.)
-            // Dann bauen wir hier:
-            var msg = $"{steamId}|{serverKey}|{ts}";
-            var sig = HmacSha256Hex(OVERLAY_SYNC_SECRET_HEX, msg);
+            var baseUrl = GetOverlayBaseUrl();
+            if (string.IsNullOrEmpty(baseUrl))
+                return false;
 
             using (var http = new HttpClient())
             {
                 http.Timeout = TimeSpan.FromSeconds(5);
 
-                var url = OVERLAY_SYNC_BASEURL
-                    + "/fetch"
-                    + "?steamId=" + WebUtility.UrlEncode(steamId.ToString())
-                    + "&serverKey=" + WebUtility.UrlEncode(serverKey)
-                    + "&ts=" + WebUtility.UrlEncode(ts)
-                    + "&sig=" + WebUtility.UrlEncode(sig);
+                string url;
+                if (baseUrl.StartsWith("http://127.0.0.1"))
+                {
+                    // Local server: no HMAC needed
+                    url = baseUrl
+                        + "/fetch"
+                        + "?steamId=" + WebUtility.UrlEncode(steamId.ToString())
+                        + "&serverKey=" + WebUtility.UrlEncode(serverKey);
+                }
+                else
+                {
+                    // Legacy remote (grace period): HMAC required
+                    var ts = UnixNow().ToString();
+                    var msg = $"{steamId}|{serverKey}|{ts}";
+#pragma warning disable CS0618
+                    var sig = HmacSha256Hex(OVERLAY_SYNC_SECRET_HEX_LEGACY, msg);
+#pragma warning restore CS0618
+                    url = baseUrl
+                        + "/fetch"
+                        + "?steamId=" + WebUtility.UrlEncode(steamId.ToString())
+                        + "&serverKey=" + WebUtility.UrlEncode(serverKey)
+                        + "&ts=" + WebUtility.UrlEncode(ts)
+                        + "&sig=" + WebUtility.UrlEncode(sig);
+                }
 
                 var resp = await http.GetAsync(url);
                 if (!resp.IsSuccessStatusCode)
@@ -11102,25 +11157,43 @@ private sealed record MarkerRef(System.Windows.Shapes.Ellipse Dot, double U_DIP,
         var overlayB64 = Convert.ToBase64String(rawBytes);
 
         var serverKey = GetServerKey();
-        var ts = UnixNow().ToString();
-        var sigInput = _mySteamId.ToString() + "|" + serverKey + "|" + ts + "|" + overlayB64;
-        var sig = HmacSha256Hex(OVERLAY_SYNC_SECRET_HEX, sigInput);
+        var baseUrl = GetOverlayBaseUrl();
+        if (string.IsNullOrEmpty(baseUrl))
+            throw new InvalidOperationException("Overlay sync disabled (local server unavailable and grace period expired).");
 
-        var payloadObj = new
+        object payloadObj;
+        if (baseUrl.StartsWith("http://127.0.0.1"))
         {
-            steamId = _mySteamId.ToString(),
-            serverKey = serverKey,
-            ts = ts,
-            overlayJsonB64 = overlayB64,
-            sig = sig
-        };
+            payloadObj = new
+            {
+                steamId = _mySteamId.ToString(),
+                serverKey = serverKey,
+                overlayJsonB64 = overlayB64
+            };
+        }
+        else
+        {
+            var ts = UnixNow().ToString();
+            var sigInput = _mySteamId.ToString() + "|" + serverKey + "|" + ts + "|" + overlayB64;
+#pragma warning disable CS0618
+            var sig = HmacSha256Hex(OVERLAY_SYNC_SECRET_HEX_LEGACY, sigInput);
+#pragma warning restore CS0618
+            payloadObj = new
+            {
+                steamId = _mySteamId.ToString(),
+                serverKey = serverKey,
+                ts = ts,
+                overlayJsonB64 = overlayB64,
+                sig = sig
+            };
+        }
 
         var payloadJson = System.Text.Json.JsonSerializer.Serialize(payloadObj);
         var content = new StringContent(payloadJson, Encoding.UTF8, "application/json");
 
         using (var http = new HttpClient())
         {
-            var url = OVERLAY_SYNC_BASEURL + "/upload";
+            var url = baseUrl + "/upload";
             var resp = await http.PostAsync(url, content);
             if (!resp.IsSuccessStatusCode)
                 throw new InvalidOperationException("Upload failed: HTTP " + (int)resp.StatusCode);
@@ -11492,14 +11565,36 @@ private sealed record MarkerRef(System.Windows.Shapes.Ellipse Dot, double U_DIP,
     }
 
     // --- Overlay Sync Config ---
-    private const string OVERLAY_SYNC_SECRET_HEX =
+    // SECURITY: old hardcoded secret kept ONLY for 30-day grace-period fallback.
+    // After 2026-06-04 this remote path will be removed entirely.
+    [Obsolete("Replaced by local OverlayLocalServer. Grace period ends 2026-06-04.")]
+    private const string OVERLAY_SYNC_SECRET_HEX_LEGACY =
     "23c5a7dbf02b63543da043ca7d6de1fbf706a080c899e334a8cd599206e13fde";
 
-    // dein Server (IP oder DNS + Port). Kein "/" am Ende.
-    private const string OVERLAY_SYNC_BASEURL = "http://85.214.193.250:5000";
+    [Obsolete("Replaced by local OverlayLocalServer. Grace period ends 2026-06-04.")]
+    private const string OVERLAY_SYNC_BASEURL_LEGACY = "http://85.214.193.250:5000";
+
+    private static readonly DateTime s_overlayGracePeriodEnd = new DateTime(2026, 6, 4, 0, 0, 0, DateTimeKind.Utc);
 
     // Hard-Limits müssen mit dem Python-Server matchen
     private const int OVERLAY_MAX_BYTES = 350_000; // ~350 KB Limit roh
+
+    // Returns local server URL if available, otherwise falls back to legacy remote
+    // during the 30-day grace period (with a deprecation log).
+    private string GetOverlayBaseUrl()
+    {
+        if (_overlayServer != null && !string.IsNullOrEmpty(_overlayServer.BaseUrl))
+            return _overlayServer.BaseUrl;
+
+        if (DateTime.UtcNow < s_overlayGracePeriodEnd)
+        {
+            AppendLog("[overlay][DEPRECATED] Local server unavailable; falling back to remote. Update required before 2026-06-04.");
+            return OVERLAY_SYNC_BASEURL_LEGACY;
+        }
+
+        AppendLog("[overlay][ERROR] Local server unavailable and grace period expired. Overlay sync disabled.");
+        return "";
+    }
 
     // ---- HMAC / Network Helpers ------------------------------------------
 
@@ -11753,16 +11848,32 @@ private sealed record MarkerRef(System.Windows.Shapes.Ellipse Dot, double U_DIP,
         try
         {
             var serverKey = GetServerKey();
-            var ts = UnixNow().ToString();
-            // Signatur beim GET: steamId|serverKey|ts
-            var sigInput = steamId.ToString() + "|" + serverKey + "|" + ts;
-            var sig = HmacSha256Hex(OVERLAY_SYNC_SECRET_HEX, sigInput);
+            var baseUrl = GetOverlayBaseUrl();
+            if (string.IsNullOrEmpty(baseUrl))
+                return false;
 
-            var url = $"{OVERLAY_SYNC_BASEURL}/fetch" +
+            string url;
+            if (baseUrl.StartsWith("http://127.0.0.1"))
+            {
+                // Local server: no HMAC needed
+                url = $"{baseUrl}/fetch" +
+                      $"?steamId={Uri.EscapeDataString(steamId.ToString())}" +
+                      $"&serverKey={Uri.EscapeDataString(serverKey)}";
+            }
+            else
+            {
+                // Legacy remote (grace period): HMAC required
+                var ts = UnixNow().ToString();
+                var sigInput = steamId.ToString() + "|" + serverKey + "|" + ts;
+#pragma warning disable CS0618
+                var sig = HmacSha256Hex(OVERLAY_SYNC_SECRET_HEX_LEGACY, sigInput);
+#pragma warning restore CS0618
+                url = $"{baseUrl}/fetch" +
                       $"?steamId={Uri.EscapeDataString(steamId.ToString())}" +
                       $"&serverKey={Uri.EscapeDataString(serverKey)}" +
                       $"&ts={Uri.EscapeDataString(ts)}" +
                       $"&sig={Uri.EscapeDataString(sig)}";
+            }
 
             using (var http = new HttpClient())
             {

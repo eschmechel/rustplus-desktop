@@ -35,7 +35,7 @@ DisableProgramGroupPage=yes
 SetupIconFile=rustplus-desktop-icon.ico
 WizardImageFile=installer.png
 UninstallDisplayIcon={app}\{#MyAppExeName}
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
