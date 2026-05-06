@@ -960,7 +960,7 @@ public partial class MainWindow
                 var uiTimer = (TextBlock)itemRow.Children[3];
                 uiTimer.Text = ev.TimerText ?? "";
                 // Visibility is managed by hover logic, but we must update the state
-                if (string.IsNullOrEmpty(ev.TimerText)) uiTimer.Visibility = Visibility.Collapsed;
+                uiTimer.Visibility = string.IsNullOrEmpty(ev.TimerText) ? Visibility.Collapsed : Visibility.Visible;
 
                 var uiDot = (System.Windows.Shapes.Ellipse)itemRow.Children[4];
                 uiDot.Fill = ev.Active ? Brushes.Cyan : Brushes.Transparent;
