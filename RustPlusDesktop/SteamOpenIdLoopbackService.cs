@@ -22,13 +22,14 @@ public class SteamOpenIdLoopbackService
         if (port == 0)
             port = RandomNumberGenerator.GetInt32(52000, 65000);
 
-        var returnTo = $"http://127.0.0.1:{port}/steam/openid/return";
-        var realm = $"http://127.0.0.1:{port}/";
-
         // CSRF protection: random state nonce
         var stateBytes = new byte[16];
         RandomNumberGenerator.Fill(stateBytes);
         var state = Convert.ToHexString(stateBytes).ToLowerInvariant();
+
+        // STATE MUST be inside return_to — Steam echoes openid.* params only.
+        var returnTo = $"http://127.0.0.1:{port}/steam/openid/return?state={Uri.EscapeDataString(state)}";
+        var realm = $"http://127.0.0.1:{port}/";
 
         var q = HttpUtility.ParseQueryString(string.Empty);
         q["openid.ns"] = "http://specs.openid.net/auth/2.0";
@@ -37,8 +38,7 @@ public class SteamOpenIdLoopbackService
         q["openid.realm"] = realm;
         q["openid.claimed_id"] = "http://specs.openid.net/auth/2.0/identifier_select";
         q["openid.identity"] = "http://specs.openid.net/auth/2.0/identifier_select";
-        // Include state in return_to so it comes back in the query string
-        var openIdUrl = $"{SteamOpenId}?{q}&state={Uri.EscapeDataString(state)}";
+        var openIdUrl = $"{SteamOpenId}?{q}";
 
         using var listener = new HttpListener();
         listener.Prefixes.Add(realm);
