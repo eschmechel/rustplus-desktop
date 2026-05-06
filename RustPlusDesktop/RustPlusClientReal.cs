@@ -4371,20 +4371,58 @@ rp.connect();
     public async Task SendTeamMessageAsync(string text, CancellationToken ct = default)
     {
         if (_api is null) throw new InvalidOperationException("Nicht verbunden.");
+        if (string.IsNullOrWhiteSpace(text)) throw new ArgumentException("Message cannot be empty.", nameof(text));
+
+        await AcquireTokenAsync(ct);
+
         var t = _api.GetType();
 
+        // 1) Try high-level API method first
         var m = t.GetMethod("SendTeamMessageAsync", new[] { typeof(string), typeof(CancellationToken) }) ??
                 t.GetMethod("SendTeamMessageAsync", new[] { typeof(string) }) ??
                 t.GetMethod("SendTeamMessage", new[] { typeof(string) });
 
-        if (m is null) throw new NotSupportedException("SendTeamMessage* nicht gefunden.");
-
-        await AcquireTokenAsync(ct);
-        var args = m.GetParameters().Length == 2 ? new object[] { text, ct } : new object[] { text };
-        var taskObj = m.Invoke(_api, args);
-        if (taskObj is Task task)
+        if (m != null)
         {
-            try { await task; }
+            var args = m.GetParameters().Length == 2 ? new object[] { text, ct } : new object[] { text };
+            var taskObj = m.Invoke(_api, args);
+            if (taskObj is Task task)
+            {
+                try { await task; }
+                catch (Exception ex) { CheckConnectionLost(ex); throw; }
+            }
+            return;
+        }
+
+        // 2) Fallback: build raw protobuf request (AppRequest { sendTeamMessage = AppSendMessage { message = text } })
+        var asm = typeof(RustPlus).Assembly;
+        var reqType = asm.GetTypes().FirstOrDefault(x => x.Name.Equals("AppRequest", StringComparison.OrdinalIgnoreCase));
+        if (reqType is null) throw new NotSupportedException("AppRequest type not found.");
+
+        var req = Activator.CreateInstance(reqType)!;
+
+        var sendProp = reqType.GetProperties(BindingFlags.Instance | BindingFlags.Public)
+            .FirstOrDefault(p => {
+                var n = p.Name.ToLowerInvariant();
+                return n.Contains("send") && n.Contains("team") && n.Contains("message");
+            });
+        if (sendProp is null) throw new NotSupportedException("AppRequest.sendTeamMessage property not found.");
+
+        var body = Activator.CreateInstance(sendProp.PropertyType)!;
+        var msgProp = body.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public)
+            .FirstOrDefault(pp => pp.Name.ToLowerInvariant().Contains("message"));
+        if (msgProp is null) throw new NotSupportedException("AppSendMessage.Message property not found.");
+
+        msgProp.SetValue(body, text);
+        sendProp.SetValue(req, body);
+
+        var send = t.GetMethod("SendRequestAsync", new[] { reqType });
+        if (send is null) throw new NotSupportedException("SendRequestAsync not found.");
+
+        var taskObj2 = send.Invoke(_api, new object[] { req });
+        if (taskObj2 is Task task2)
+        {
+            try { await task2; }
             catch (Exception ex) { CheckConnectionLost(ex); throw; }
         }
     }

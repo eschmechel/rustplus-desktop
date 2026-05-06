@@ -215,6 +215,8 @@ namespace RustPlusDesk.Views
         }
 
         private int _snapInFlight = 0;
+        private int _consecutiveErrors = 0;
+        private DateTime _lastRateLimit = DateTime.MinValue;
 
         private async void Timer_Tick(object? sender, EventArgs e)
         {
@@ -224,12 +226,33 @@ namespace RustPlusDesk.Views
             try
             {
                 var frame = await _real.GetCameraFrameViaNodeAsync(_cameraId, timeoutMs: 4000);
-                if (frame?.Bytes != null) ShowFrame(frame);
-                else TxtStatus.Text = "no frame";
+                if (frame?.Bytes != null)
+                {
+                    ShowFrame(frame);
+                    _consecutiveErrors = 0;
+                    // Reset to user-selected interval on success
+                    ApplyFps();
+                }
+                else
+                {
+                    TxtStatus.Text = "no frame";
+                    _consecutiveErrors++;
+                }
             }
             catch (Exception ex)
             {
-                TxtStatus.Text = ex.Message;
+                var msg = ex.Message;
+                TxtStatus.Text = msg;
+                _consecutiveErrors++;
+
+                // Rate limit backoff: double the interval up to 30s
+                if (msg.Contains("rate_limit", StringComparison.OrdinalIgnoreCase))
+                {
+                    _lastRateLimit = DateTime.UtcNow;
+                    var backoffMs = Math.Min(30000, (int)(1000 * Math.Pow(2, Math.Min(_consecutiveErrors, 5))));
+                    _timer.Interval = TimeSpan.FromMilliseconds(backoffMs);
+                    TxtStatus.Text = $"Rate limited — backing off ({backoffMs}ms)";
+                }
             }
             finally
             {
