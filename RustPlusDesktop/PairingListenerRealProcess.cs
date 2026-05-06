@@ -65,7 +65,49 @@ namespace RustPlusDesk.Services
         private string ConfigPath => Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "RustPlusDesk", "rustplusjs-config.json");
+
+        private string ConfigPathEnc => ConfigPath + ".enc";
+
         public event EventHandler<TeamChatMessage>? ChatReceived;
+
+        // SECURITY: DPAPI helpers for FCM credentials
+        private static void EncryptFileDpapi(string plainPath, string encPath)
+        {
+            var bytes = File.ReadAllBytes(plainPath);
+            var encrypted = System.Security.Cryptography.ProtectedData.Protect(
+                bytes, null, System.Security.Cryptography.DataProtectionScope.CurrentUser);
+            File.WriteAllBytes(encPath, encrypted);
+        }
+
+        private static void DecryptFileDpapi(string encPath, string plainPath)
+        {
+            var encrypted = File.ReadAllBytes(encPath);
+            var bytes = System.Security.Cryptography.ProtectedData.Unprotect(
+                encrypted, null, System.Security.Cryptography.DataProtectionScope.CurrentUser);
+            File.WriteAllBytes(plainPath, bytes);
+        }
+
+        private void EnsureConfigDecrypted()
+        {
+            if (File.Exists(ConfigPathEnc) && !File.Exists(ConfigPath))
+            {
+                try { DecryptFileDpapi(ConfigPathEnc, ConfigPath); }
+                catch { /* ignore decryption errors */ }
+            }
+        }
+
+        private void EncryptAndCleanupConfig()
+        {
+            if (File.Exists(ConfigPath))
+            {
+                try
+                {
+                    EncryptFileDpapi(ConfigPath, ConfigPathEnc);
+                    File.Delete(ConfigPath);
+                }
+                catch { /* ignore encryption errors */ }
+            }
+        }
 
         private void TryFlushChat()
         {
@@ -98,6 +140,9 @@ namespace RustPlusDesk.Services
                 ?? throw new InvalidOperationException("rustplus-cli not found (rustplus-cli.zip entpackt?).");
 
             Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath)!);
+
+            // SECURITY: decrypt FCM config if stored encrypted
+            EnsureConfigDecrypted();
 
             // 1) Registrierung nur, wenn keine/zu kleine Config
             if (!File.Exists(ConfigPath) || new FileInfo(ConfigPath).Length < 50)
@@ -142,7 +187,12 @@ namespace RustPlusDesk.Services
                 }
 
                 _log("Registering completed (Confirm login in browser if applicable).");
+                // SECURITY: encrypt newly created FCM credentials
+                EncryptAndCleanupConfig();
             }
+
+            // SECURITY: ensure plaintext config is available for listener
+            EnsureConfigDecrypted();
 
             // 2) Listener starten
             _log("Starting Listener (fcm-listen) …");
@@ -198,6 +248,9 @@ namespace RustPlusDesk.Services
             _listenProc?.Dispose();
             _listenProc = null;
             _cts?.Cancel(); _cts = null;
+
+            // SECURITY: encrypt FCM credentials after listener stops
+            EncryptAndCleanupConfig();
 
             var wasRunning = _running;
             _running = false;

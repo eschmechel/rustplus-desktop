@@ -3003,6 +3003,20 @@ private sealed record MarkerRef(System.Windows.Shapes.Ellipse Dot, double U_DIP,
         catch (Exception ex) { AppendLog("Saving failed: " + ex.Message); }
     }
 
+    // SECURITY: Basic host trust check for rustplus:// URI handler.
+    // Official Facepunch links use specific host patterns; everything else is "untrusted".
+    private static bool IsTrustedRustHost(string host)
+    {
+        if (string.IsNullOrWhiteSpace(host)) return false;
+        // Official Rust+ companion app uses specific domains/IPs
+        // Add known-good patterns here if needed. For now, default to false for manual IPs.
+        var lower = host.ToLowerInvariant();
+        // Facepunch official companion endpoints (examples — adjust as needed)
+        if (lower.EndsWith(".facepunch.com") || lower.EndsWith(".rustplus.com"))
+            return true;
+        return false;
+    }
+
     public void HandleRustPlusLink(string link)
     {
         try
@@ -3045,6 +3059,22 @@ private sealed record MarkerRef(System.Windows.Shapes.Ellipse Dot, double U_DIP,
             }
 
             if (string.IsNullOrEmpty(host)) throw new Exception("IP/Address missing");
+
+            // SECURITY: validate / confirm before auto-pairing from external rustplus:// links
+            if (!IsTrustedRustHost(host))
+            {
+                var confirm = MessageBox.Show(
+                    $"An external link wants to pair with an unofficial Rust server:\n\n" +
+                    $"Host: {host}\n" +
+                    $"Port: {port}\n\n" +
+                    $"Only proceed if you trust this source.",
+                    "Confirm Server Pairing", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                if (confirm != MessageBoxResult.Yes)
+                {
+                    AppendLog($"[uri] User rejected pairing with {host}:{port}");
+                    return;
+                }
+            }
 
             // Wir rufen die Pairing-Funktion auf
             Pairing_Paired(this, new PairingPayload
