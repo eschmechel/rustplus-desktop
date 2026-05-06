@@ -70,6 +70,7 @@ public class TrackingSettings
     public bool AnnounceSpawnsMaster { get; set; } = false;
     public bool SaveAlertSelection { get; set; } = true;
     public string LastSeenVersion { get; set; } = "";
+    public bool LastDeepSeaActive { get; set; } = false;
     public string LastDeepSeaDirection { get; set; } = "";
 }
 
@@ -320,6 +321,11 @@ public static class TrackingService
     {
         get => _settings.AnnounceDeepSea;
         set { _settings.AnnounceDeepSea = value; SaveDB(); }
+    }
+    public static bool LastDeepSeaActive
+    {
+        get => _settings.LastDeepSeaActive;
+        set { _settings.LastDeepSeaActive = value; SaveDB(); }
     }
     public static string LastDeepSeaDirection
     {

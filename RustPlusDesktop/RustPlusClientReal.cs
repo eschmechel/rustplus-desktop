@@ -4376,6 +4376,7 @@ rp.connect();
         await AcquireTokenAsync(ct);
 
         var t = _api.GetType();
+        var log = _log ?? (_ => { });
 
         // 1) Try high-level API method first
         var m = t.GetMethod("SendTeamMessageAsync", new[] { typeof(string), typeof(CancellationToken) }) ??
@@ -4384,6 +4385,7 @@ rp.connect();
 
         if (m != null)
         {
+            log($"[chat] Sending via high-level API method: {text}");
             var args = m.GetParameters().Length == 2 ? new object[] { text, ct } : new object[] { text };
             var taskObj = m.Invoke(_api, args);
             if (taskObj is Task task)
@@ -4416,6 +4418,7 @@ rp.connect();
         msgProp.SetValue(body, text);
         sendProp.SetValue(req, body);
 
+        log($"[chat] Sending via raw protobuf: {text}");
         var send = t.GetMethod("SendRequestAsync", new[] { reqType });
         if (send is null) throw new NotSupportedException("SendRequestAsync not found.");
 

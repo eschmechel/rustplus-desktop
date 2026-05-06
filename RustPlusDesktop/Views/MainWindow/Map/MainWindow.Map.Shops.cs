@@ -30,6 +30,23 @@ public partial class MainWindow
     private bool IsDeepSeaNpcShop(RustPlusClientReal.ShopMarker s)
         => s.Label != null && _deepSeaNpcShopNames.Contains(s.Label) && s.X < 0;
 
+    private void RestoreDeepSeaState()
+    {
+        if (TrackingService.LastDeepSeaActive && !_deepSeaActive)
+        {
+            var dir = TrackingService.LastDeepSeaDirection;
+            _deepSeaActive = true;
+            _deepSeaSpawnTime = null;
+            _deepSeaMidEvent = true;
+            AppendLog($"[DEEPSEA] Restored active state from last session (direction: {dir})");
+        }
+    }
+
+    private void PersistDeepSeaState()
+    {
+        TrackingService.LastDeepSeaActive = _deepSeaActive;
+    }
+
     private void CheckDeepSeaEvent(IEnumerable<RustPlusClientReal.ShopMarker> shops)
     {
         var deepSeaShop = shops.FirstOrDefault(s =>
@@ -60,6 +77,7 @@ public partial class MainWindow
                     _deepSeaMidEvent = true;
                     AppendLog($"[DEEPSEA] Active on first poll (mid-event) at {deepSeaShop.X:F0},{deepSeaShop.Y:F0} ({dir})");
                 }
+                PersistDeepSeaState();
             }
             _deepSeaActive = true;
         }
@@ -79,6 +97,7 @@ public partial class MainWindow
             }
             _deepSeaActive = false;
             _deepSeaMidEvent = false;
+            PersistDeepSeaState();
         }
     }
 
@@ -131,6 +150,7 @@ public partial class MainWindow
     {
         if (ChkShops.IsChecked == true && _worldSizeS > 0 && _worldRectPx.Width > 0)
         {
+            RestoreDeepSeaState(); // Restore Deep Sea active state from last session before first poll
             _shopTimer?.Stop();
             _shopTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(20) };
             _shopTimer.Tick += async (_, __) => await PollShopsOnceAsync();
