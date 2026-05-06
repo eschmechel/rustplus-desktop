@@ -898,14 +898,28 @@ function hookProtobuf(pb){
   return { relaxAlreadyBuilt };
 }
 
+// Diagnostic: confirm Node.js and pkgDir
+console.error("[cam-node] starting with pkgDir=" + pkgDir);
+console.error("[cam-node] node version=" + process.version);
+
 // 1) protobufjs laden & hooken
 let pb = null;
 try { pb = reqFrom(pkgDir, "protobufjs"); }
-catch { try { pb = reqFrom(pkgDir, "protobufjs/minimal"); } catch {} }
+catch (e) {
+  console.error("[cam-node] protobufjs require failed: " + (e && e.message ? e.message : String(e)));
+  try { pb = reqFrom(pkgDir, "protobufjs/minimal"); } catch (e2) {
+    console.error("[cam-node] protobufjs/minimal require failed: " + (e2 && e2.message ? e2.message : String(e2)));
+  }
+}
 const hook = hookProtobuf(pb);
 
 // 2) jetzt rustplus.js laden (damit unser Hook greift)
-const RustPlus = reqFrom(pkgDir, "@liamcottle/rustplus.js");
+let RustPlus = null;
+try { RustPlus = reqFrom(pkgDir, "@liamcottle/rustplus.js"); }
+catch (e) {
+  console.error("[cam-node] rustplus.js require failed: " + (e && e.message ? e.message : String(e)));
+  throw e;
+}
 
 // 3) Safety-Net: falls Types schon gebaut wurden, nochmals entschärfen
 try { hook && hook.relaxAlreadyBuilt && hook.relaxAlreadyBuilt(); } catch {}
@@ -974,17 +988,60 @@ rp.on("connected", async () => {
     // Sicherheitsnetz
     timer = setTimeout(() => { console.error("TIMEOUT"); try { rp.disconnect(); } catch {} }, Math.max(1000, tmo));
   } catch (e) {
-    console.error("ERR:" + (e && e.message ? e.message : String(e)));
+    const ser = (x) => {
+      try {
+        if (x == null) return String(x);
+        if (typeof x === "string") return x;
+        if (x.message) return x.message + (x.code ? " (" + x.code + ")" : "");
+        if (x.code) return x.code;
+        return JSON.stringify(x, Object.getOwnPropertyNames(x));
+      } catch { return String(x); }
+    };
+    console.error("ERR:" + ser(e));
     try { rp.disconnect(); } catch {}
   }
 });
 
 rp.on("error", (e) => {
   try {
-    const msg = (e && (e.message || e.code)) ? `${e.message||e.code}` : JSON.stringify(e);
-    console.error("ERR:" + msg);
+    const ser = (x) => {
+      try {
+        if (x == null) return String(x);
+        if (typeof x === "string") return x;
+        if (x.message) return x.message + (x.code ? " (" + x.code + ")" : "");
+        if (x.code) return x.code;
+        return JSON.stringify(x, Object.getOwnPropertyNames(x));
+      } catch { return String(x); }
+    };
+    console.error("ERR:" + ser(e));
   } catch { console.error("ERR:unknown"); }
 });
+
+// Catch any unhandled errors from the rustplus.js library
+process.on("uncaughtException", (e) => {
+  const ser = (x) => {
+    try {
+      if (x == null) return String(x);
+      if (typeof x === "string") return x;
+      if (x.message) return x.message;
+      return JSON.stringify(x, Object.getOwnPropertyNames(x));
+    } catch { return String(x); }
+  };
+  console.error("ERR:uncaughtException:" + ser(e));
+  process.exit(1);
+});
+process.on("unhandledRejection", (reason) => {
+  const ser = (x) => {
+    try {
+      if (x == null) return String(x);
+      if (typeof x === "string") return x;
+      if (x.message) return x.message;
+      return JSON.stringify(x, Object.getOwnPropertyNames(x));
+    } catch { return String(x); }
+  };
+  console.error("ERR:unhandledRejection:" + ser(reason));
+});
+
 rp.connect();
 """;
 
