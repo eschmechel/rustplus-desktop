@@ -193,6 +193,10 @@ public partial class App : Application
     {
         while (true)
         {
+            // SECURITY NOTE: On modern .NET the default NamedPipeServerStream ACL
+            // restricts access to the same user. For explicit hardening, install the
+            // System.IO.Pipes.AccessControl package and pass a PipeSecurity object
+            // restricting the pipe to the current Windows identity.
             using var server = new NamedPipeServerStream(PipeName, PipeDirection.In, 1,
                                                          PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
             try

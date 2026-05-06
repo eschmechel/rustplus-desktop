@@ -604,8 +604,14 @@ namespace RustPlusDesk.Services
             if (File.Exists(zip))
             {
                 var stamp = Path.Combine(target, ".stamp");
-                var sig = $"{new FileInfo(zip).Length}-{File.GetLastWriteTimeUtc(zip).Ticks}";
-                var need = !File.Exists(stamp) || File.ReadAllText(stamp) != sig
+                // SECURITY: use SHA-256 of the ZIP for integrity verification
+                string hash;
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                using (var fs = File.OpenRead(zip))
+                {
+                    hash = BitConverter.ToString(sha.ComputeHash(fs)).Replace("-", "").ToLowerInvariant();
+                }
+                var need = !File.Exists(stamp) || File.ReadAllText(stamp) != hash
                            || !Directory.Exists(Path.Combine(target, "node_modules"));
 
                 if (need)
@@ -613,7 +619,7 @@ namespace RustPlusDesk.Services
                     try { Directory.Delete(target, true); } catch { }
                     Directory.CreateDirectory(target);
                     ZipFile.ExtractToDirectory(zip, target);
-                    File.WriteAllText(stamp, sig);
+                    File.WriteAllText(stamp, hash);
                 }
                 return target;
             }

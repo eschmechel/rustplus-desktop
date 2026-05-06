@@ -210,7 +210,11 @@ public partial class MainWindow
             var env = await CoreWebView2Environment.CreateAsync(userDataFolder: dataPath);
             await wv.EnsureCoreWebView2Async(env);
 
+#if DEBUG
             wv.CoreWebView2.Settings.AreDevToolsEnabled = true;
+#else
+            wv.CoreWebView2.Settings.AreDevToolsEnabled = false;
+#endif
             wv.CoreWebView2.WebMessageReceived += ShopSearch_WebMessageReceived;
 
             string html = BuildShopSearchHtml();

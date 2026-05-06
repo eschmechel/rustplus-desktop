@@ -11,5 +11,8 @@
   "license": "ISC",
   "dependencies": {
     "@liamcottle/rustplus.js": "^2.5.0"
+  },
+  "overrides": {
+    "tough-cookie": "^4.1.3"
   }
 }
