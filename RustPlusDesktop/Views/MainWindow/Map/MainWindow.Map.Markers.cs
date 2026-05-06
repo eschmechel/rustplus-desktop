@@ -732,29 +732,29 @@ public partial class MainWindow
         string? dsTimer = null;
         string? dsTip = null;
         string lastDir = TrackingService.LastDeepSeaDirection;
-        string dirSuffix = string.IsNullOrEmpty(lastDir) ? "" : $" ({lastDir})";
         if (_deepSeaActive)
         {
             if (_deepSeaSpawnTime.HasValue)
             {
                 var dsElapsed = DateTime.UtcNow - _deepSeaSpawnTime.Value;
                 dsTimer = $"{(int)dsElapsed.TotalHours:D1}:{dsElapsed.Minutes:D2}";
-                dsTip = $"Spawned {FormatAgo(dsElapsed)} ago{dirSuffix}";
+                dsTip = $"Spawned {FormatAgo(dsElapsed)} ago" + (string.IsNullOrEmpty(lastDir) ? "" : $" ({lastDir})");
             }
             else
             {
-                dsTimer = "??:??";
-                dsTip = (_deepSeaMidEvent ? "Shops enabled mid-event \u2014 spawn time unknown" : "Spawn time unknown") + dirSuffix;
+                dsTimer = "??:??" + (string.IsNullOrEmpty(lastDir) ? "" : $" ({lastDir})");
+                dsTip = (_deepSeaMidEvent ? "Shops enabled mid-event \u2014 spawn time unknown" : "Spawn time unknown") + (string.IsNullOrEmpty(lastDir) ? "" : $" ({lastDir})");
             }
         }
         else if (_deepSeaDespawnTime.HasValue)
         {
             var dsInactive = DateTime.UtcNow - _deepSeaDespawnTime.Value;
             dsTimer = $"{(int)dsInactive.TotalHours:D1}:{dsInactive.Minutes:D2}";
-            dsTip = $"Inactive since {FormatAgo(dsInactive)} ago{dirSuffix}";
+            dsTip = $"Inactive since {FormatAgo(dsInactive)} ago" + (string.IsNullOrEmpty(lastDir) ? "" : $" ({lastDir})");
         }
         else if (!string.IsNullOrEmpty(lastDir))
         {
+            dsTimer = lastDir; // Show direction prominently when inactive but known
             dsTip = $"Last known direction: {lastDir}";
         }
         activeEvents.Add(new EventDockItem { Name = "Deep Sea Event", Icon = "pack://application:,,,/icons/ds_event.png", Active = _deepSeaActive, Id = 0, X = 0, Y = 0, Trackable = false, Type = 0, TimerText = dsTimer, ToolTip = dsTip });

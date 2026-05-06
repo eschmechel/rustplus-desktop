@@ -1170,11 +1170,21 @@ rp.connect();
             L(e.Data); // alles loggen
             if (e.Data.StartsWith("ERR:"))
             {
-                // Graceful handling: rate_limit is a transient Facepunch API limit, not a fatal error
-                if (e.Data.Contains("rate_limit", StringComparison.OrdinalIgnoreCase))
+                // Graceful handling: known transient Facepunch errors should not crash the app
+                var lower = e.Data.ToLowerInvariant();
+                if (lower.Contains("rate_limit"))
                 {
                     L("[cam-node] Rate limited by Facepunch API — retry after a few seconds.");
-                    // Don't throw; let the caller treat this as a timeout (returns null frame)
+                    tcs.TrySetCanceled();
+                }
+                else if (lower.Contains("player_online"))
+                {
+                    L("[cam-node] Camera in use by another player/device — disconnect Rust+ mobile app to use cameras here.");
+                    tcs.TrySetCanceled();
+                }
+                else if (lower.Contains("not_found") || lower.Contains("does not exist"))
+                {
+                    L("[cam-node] Camera not found on server — may have been destroyed or ID changed.");
                     tcs.TrySetCanceled();
                 }
                 else
