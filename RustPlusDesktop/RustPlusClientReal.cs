@@ -1182,6 +1182,11 @@ rp.connect();
                     L("[cam-node] Camera in use by another player/device — disconnect Rust+ mobile app to use cameras here.");
                     tcs.TrySetCanceled();
                 }
+                else if (lower.Contains("access_denied"))
+                {
+                    L("[cam-node] Access denied — camera is owned by a different Steam account. Only the camera owner or team members can view it.");
+                    tcs.TrySetCanceled();
+                }
                 else if (lower.Contains("not_found") || lower.Contains("does not exist"))
                 {
                     L("[cam-node] Camera not found on server — may have been destroyed or ID changed.");
