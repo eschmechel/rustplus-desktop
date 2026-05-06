@@ -30,6 +30,8 @@ Thumbs.db
 *.exe
 *.msi
 *.dll
+# Ausnahme: gebündelter Node.js-Runtime
+!runtime/node-win-x64/node.exe
 
 # Installer-Output: Ordner behalten, Inhalte ignorieren
 installer/Output/*

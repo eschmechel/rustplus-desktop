@@ -699,7 +699,31 @@ namespace RustPlusDesk.Services
             // 2) Debug: direkt aus dem Projekt
             var p2 = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..",
                                                    "runtime", "node-win-x64", "node.exe"));
-            return File.Exists(p2) ? p2 : null;
+            if (File.Exists(p2)) return p2;
+
+            // 3) Fallback: system-wide Node.js on PATH
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "where",
+                    Arguments = "node",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    CreateNoWindow = true
+                };
+                using var p = Process.Start(psi);
+                if (p != null)
+                {
+                    p.WaitForExit(3000);
+                    var output = p.StandardOutput.ReadToEnd().Trim();
+                    if (!string.IsNullOrEmpty(output) && File.Exists(output))
+                        return output;
+                }
+            }
+            catch { /* ignore */ }
+
+            return null;
         }
 
         private static string PathJoin(params string[] parts) => Path.Combine(parts);
